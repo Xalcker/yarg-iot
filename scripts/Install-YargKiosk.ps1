@@ -13,6 +13,25 @@ param(
     [switch]$SkipAmdDriverDownload,
     [switch]$InstallAmdDriver,
 
+    [switch]$SkipKeyboardFilter,
+    [string[]]$BlockedPredefinedKeys = @(
+        'Ctrl+Alt+Del',
+        'Shift+Ctrl+Esc',
+        'Ctrl+Esc',
+        'Alt+Tab',
+        'Alt+F4',
+        'Alt+Space',
+        'Win+L',
+        'Win+R',
+        'Win+E',
+        'Win+I',
+        'Win+U',
+        'Win+X',
+        'Win+Tab',
+        'Windows'
+    ),
+    [int]$KeyboardBreakoutKeyScanCode = 71,
+
     [string]$YargArguments = '-screen-fullscreen 1',
     [switch]$NoAutoLogon,
     [switch]$EnableUnbrandedBoot,
@@ -239,6 +258,58 @@ function Enable-YargShellLauncher {
     $class.SetEnabled($true) | Out-Null
 }
 
+function Set-KeyboardFilterSetting {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Value
+    )
+
+    $setting = Get-WmiObject -Namespace 'root\standardcimv2\embedded' -Class WEKF_Settings -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq $Name }
+
+    if ($null -eq $setting) {
+        Write-Warning "No pude configurar Keyboard Filter '$Name'. Puede requerir reinicio tras habilitar la feature."
+        return
+    }
+
+    $setting.Value = $Value
+    $setting.Put() | Out-Null
+}
+
+function Enable-YargKeyboardFilter {
+    param(
+        [string[]]$Keys,
+        [int]$BreakoutScanCode
+    )
+
+    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-DeviceLockdown'
+    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-KeyboardFilter'
+
+    Set-KeyboardFilterSetting -Name 'DisableKeyboardFilterForAdministrators' -Value 'true'
+    Set-KeyboardFilterSetting -Name 'ForceOffAccessibility' -Value 'true'
+    Set-KeyboardFilterSetting -Name 'BreakoutKeyScanCode' -Value ([string]$BreakoutScanCode)
+
+    try {
+        $class = [wmiclass]'\\localhost\root\standardcimv2\embedded:WEKF_PredefinedKey'
+    }
+    catch {
+        Write-Warning 'No pude abrir WEKF_PredefinedKey. Reinicia y vuelve a ejecutar el script para aplicar las teclas bloqueadas.'
+        return
+    }
+
+    foreach ($key in $Keys) {
+        try {
+            $result = $class.Enable($key)
+            if ($result.ReturnValue -ne 0) {
+                Write-Warning "Keyboard Filter no acepto '$key' (ReturnValue=$($result.ReturnValue))."
+            }
+        }
+        catch {
+            Write-Warning "Keyboard Filter no pudo bloquear '$key': $($_.Exception.Message)"
+        }
+    }
+}
+
 function Enable-CustomLogon {
     Enable-OptionalFeatureIfNeeded -FeatureName 'Client-DeviceLockdown'
     Enable-OptionalFeatureIfNeeded -FeatureName 'Client-EmbeddedLogon'
@@ -294,6 +365,10 @@ $launcher = Write-YargLauncher -YargExe $yarg.ExePath -Arguments $YargArguments
 Enable-CustomLogon
 Enable-YargShellLauncher -KioskSid $kioskSid -LauncherPath $launcher
 
+if (-not $SkipKeyboardFilter) {
+    Enable-YargKeyboardFilter -Keys $BlockedPredefinedKeys -BreakoutScanCode $KeyboardBreakoutKeyScanCode
+}
+
 if (-not $NoAutoLogon) {
     Enable-AutoLogon -UserName $KioskUser -Password $plainPassword
 }
@@ -322,6 +397,9 @@ $manifest = [pscustomobject]@{
     KioskUser = $KioskUser
     KioskSid = $kioskSid
     AutoLogon = (-not $NoAutoLogon)
+    KeyboardFilter = (-not $SkipKeyboardFilter)
+    KeyboardBreakoutKeyScanCode = if ($SkipKeyboardFilter) { $null } else { $KeyboardBreakoutKeyScanCode }
+    BlockedPredefinedKeys = if ($SkipKeyboardFilter) { @() } else { $BlockedPredefinedKeys }
     AmdDriver = $driverPath
 }
 
@@ -335,5 +413,8 @@ Write-Host "Usuario kiosk: $KioskUser ($kioskSid)"
 Write-Host "Manifest: $manifestPath"
 if (-not $NoAutoLogon) {
     Write-Warning 'AutoLogon usa DefaultPassword en Winlogon. La cuenta no es admin, pero la clave queda disponible para administradores locales.'
+}
+if (-not $SkipKeyboardFilter) {
+    Write-Host "Keyboard Filter activo para usuarios no admin. Pulsa Home 5 veces para salir a la pantalla de bienvenida."
 }
 Write-Host 'Reinicia para probar. Si todo esta bien, ejecuta Sysprep y captura la imagen desde WinPE.'

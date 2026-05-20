@@ -42,6 +42,12 @@ Con instalacion silenciosa del paquete AMD descargado:
 
 El script descarga el instalador AMD RX 6400 al cache local siempre que no uses `-SkipAmdDriverDownload`. La instalacion silenciosa usa `-INSTALL`, que AMD documenta para Radeon Software; si falla en una version concreta, ejecuta el `.exe` descargado manualmente o extrae el paquete y lanza su `Setup.exe -INSTALL`.
 
+Si necesitas dejar temporalmente el teclado sin filtrar durante pruebas:
+
+```powershell
+.\scripts\Install-YargKiosk.ps1 -Channel stable -SkipKeyboardFilter
+```
+
 ## Que configura el script
 
 - Descarga el ultimo release de GitHub segun canal:
@@ -53,6 +59,9 @@ El script descarga el instalador AMD RX 6400 al cache local siempre que no uses 
 - Deja `explorer.exe` para el grupo local Administrators.
 - Configura inicio de sesion automatico para `YargKiosk`, salvo que pases `-NoAutoLogon`.
 - Habilita Custom Logon para ocultar elementos de inicio de sesion comunes.
+- Habilita Keyboard Filter para usuarios no administradores y bloquea combinaciones de salida como `Ctrl+Alt+Del`, `Shift+Ctrl+Esc`, `Ctrl+Esc`, `Alt+Tab`, `Alt+F4`, `Win+L`, `Win+R`, `Win+E`, `Win+I`, `Win+U`, `Win+X`, `Win+Tab` y la tecla Windows.
+- Deja Keyboard Filter desactivado para administradores y configura `Home` cinco veces como tecla de escape a la pantalla de bienvenida.
+- El arranque sin marca queda disponible con `-EnableUnbrandedBoot`, porque cambia opciones de `bcdedit` que conviene probar por hardware antes de capturar imagen.
 
 ## Captura e implementacion
 
