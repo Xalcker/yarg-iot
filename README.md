@@ -1,6 +1,6 @@
 # Kiosko YARG en Windows IoT Enterprise
 
-Este paquete prepara una imagen de referencia de Windows IoT Enterprise para arrancar YARG como shell usando la cuenta default/actual del sistema, sin crear una cuenta local adicional.
+Este paquete prepara Windows IoT Enterprise para arrancar YARG como shell usando la cuenta default/actual del sistema, sin crear usuarios adicionales y sin automatizar drivers de video.
 
 El canal de YARG se puede elegir entre `stable` y `nightly`.
 
@@ -10,55 +10,56 @@ El canal de YARG se puede elegir entre `stable` y `nightly`.
 - Microsoft Learn: personalizar el dispositivo en modo auditoria con Device Lockdown, Custom Logon, Unbranded Boot y Shell Launcher.
 - Microsoft Learn: ejecutar Sysprep, capturar la imagen con WinPE/DISM y desplegarla en otro dispositivo.
 - GitHub Releases de `YARC-Official/YARG` para stable y `YARC-Official/YARG-BleedingEdge` para nightly.
-- AMD Radeon RX 6400 driver page. A fecha 2026-05-20 el driver recomendado publicado en la pagina enlazada es Adrenalin 26.5.1 para Windows 11 64-bit, release date 2026-05-06.
 
 ## Flujo recomendado
 
 1. Instala Windows IoT Enterprise y entra en modo auditoria con `Ctrl+Shift+F3`.
 2. Abre PowerShell como administrador.
-3. Ejecuta el instalador desde este repo.
-4. El script habilita features, reinicia y se reanuda con `RunOnce`.
-5. Si usas `-InstallAmdDriver`, instala AMD en una etapa separada antes del kiosko.
-6. La etapa final aplica Shell Launcher al usuario actual/default y reinicia.
-7. Cuando todo este validado, ejecuta Sysprep y captura la imagen desde WinPE.
+3. Ejecuta la etapa inicial del instalador.
+4. Reinicia y deja que Windows termine de habilitar Device Lockdown.
+5. Instala manualmente los drivers de video AMD, NVIDIA o Intel desde el instalador oficial del fabricante.
+6. Reinicia y confirma resolucion correcta, aceleracion de GPU, audio y controles.
+7. Ejecuta la etapa `Kiosk` para descargar YARG y aplicar Shell Launcher.
+8. Cuando todo este validado, ejecuta Sysprep y captura la imagen desde WinPE.
 
-## Instalacion rapida
+## Instalacion
 
-Stable:
+Stable, etapa inicial:
 
 ```powershell
 Set-ExecutionPolicy Bypass -Scope Process -Force
 .\scripts\Install-YargKiosk.ps1 -Channel stable
 ```
 
-Nightly:
+Nightly, etapa inicial:
 
 ```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
 .\scripts\Install-YargKiosk.ps1 -Channel nightly
 ```
 
-Con instalacion silenciosa del paquete AMD descargado:
+Despues del reinicio, instala manualmente drivers de video. Cuando el escritorio se vea bien, ejecuta:
 
 ```powershell
-.\scripts\Install-YargKiosk.ps1 -Channel stable -InstallAmdDriver
+Set-ExecutionPolicy Bypass -Scope Process -Force
+C:\ProgramData\YARG-Kiosk\Install-YargKiosk.ps1 -Stage Kiosk -ConfigPath C:\ProgramData\YARG-Kiosk\install-config.json
 ```
 
 Para probar sin filtrar teclado:
 
 ```powershell
-.\scripts\Install-YargKiosk.ps1 -Channel stable -SkipKeyboardFilter
+C:\ProgramData\YARG-Kiosk\Install-YargKiosk.ps1 -Stage Kiosk -ConfigPath C:\ProgramData\YARG-Kiosk\install-config.json -SkipKeyboardFilter
 ```
 
-## Etapas
+## Drivers
 
-- Etapa 1: habilita Device Lockdown, Shell Launcher, Custom Logon, Keyboard Filter y opcionalmente Unbranded Boot.
-- Reinicio 1: Windows termina de instalar features.
-- Etapa AMD, solo si usas `-InstallAmdDriver`: ejecuta el driver AMD mientras sigues en Explorer/admin.
-- Reinicio AMD: permite que Windows termine de aplicar el driver.
-- Etapa Kiosk: descarga YARG, crea el launcher, aplica Custom Logon, Keyboard Filter y Shell Launcher al usuario actual/default.
-- Reinicio final: prueba real del kiosko.
+Los drivers ya no son parte de la automatizacion. Instala manualmente el paquete correcto antes de la etapa `Kiosk`:
 
-El script ya no crea `YargKiosk`, no cambia contrasenas y no configura AutoLogon. En modo auditoria, Windows normalmente vuelve a entrar al administrador/audit user; ese mismo usuario sera el que reciba Shell Launcher.
+- AMD Radeon: usa AMD Software Adrenalin para tu GPU.
+- NVIDIA: usa el driver GeForce/RTX/Quadro correspondiente.
+- Intel: usa Intel Graphics Driver/Arc & Iris Xe segun el hardware.
+
+Haz este paso despues del primer reinicio del script y antes de aplicar Shell Launcher. Reinicia las veces necesarias hasta que la resolucion y el administrador de dispositivos se vean correctos.
 
 ## Que configura
 
@@ -69,36 +70,10 @@ El script ya no crea `YargKiosk`, no cambia contrasenas y no configura AutoLogon
 - Aplica Shell Launcher al SID del usuario que ejecuta la etapa `Kiosk`.
 - Mantiene `explorer.exe` como shell por defecto para otros usuarios.
 - Limpia restos de AutoLogon de versiones anteriores del script.
+- Lanza `YARG.exe` directamente como shell.
 - Habilita Custom Logon.
 - Habilita Keyboard Filter, salvo que uses `-SkipKeyboardFilter`.
 - Configura `Home` cinco veces como tecla de escape.
-- Descarga el instalador AMD RX 6400 al cache local, salvo que uses `-SkipAmdDriverDownload`.
-
-El cache queda en:
-
-```powershell
-C:\ProgramData\YARG-Kiosk\Downloads
-```
-
-## Driver AMD
-
-Por defecto el script solo descarga el instalador AMD. Si pasas `-InstallAmdDriver`, lo ejecuta en etapa separada con:
-
-```powershell
--INSTALL
-```
-
-Puedes cambiar argumentos:
-
-```powershell
-.\scripts\Install-YargKiosk.ps1 -Channel stable -InstallAmdDriver -AmdInstallArguments '-INSTALL','-boot'
-```
-
-Si el instalador no completa, ejecuta manualmente el `.exe` desde:
-
-```powershell
-C:\ProgramData\YARG-Kiosk\Downloads
-```
 
 ## Revertir
 

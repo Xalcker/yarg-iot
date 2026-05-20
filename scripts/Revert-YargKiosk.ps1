@@ -66,7 +66,6 @@ Remove-ItemProperty -Path $winlogon -Name DefaultPassword -ErrorAction SilentlyC
 Remove-ItemProperty -Path $winlogon -Name DefaultUserName -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path $winlogon -Name DefaultDomainName -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'YARG Kiosk Stage 2' -ErrorAction SilentlyContinue
-Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'YARG Kiosk Drivers' -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'YARG Kiosk Kiosk' -ErrorAction SilentlyContinue
 
 Start-Process explorer.exe -ErrorAction SilentlyContinue

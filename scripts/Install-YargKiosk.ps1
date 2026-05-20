@@ -1,7 +1,7 @@
 #requires -version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Auto', 'Features', 'Drivers', 'Kiosk')]
+    [ValidateSet('Auto', 'Features', 'Kiosk')]
     [string]$Stage = 'Auto',
 
     [string]$ConfigPath,
@@ -10,11 +10,6 @@ param(
     [string]$Channel = 'stable',
 
     [string]$InstallRoot = 'C:\YARG',
-
-    [string]$AmdDriverUrl = 'https://drivers.amd.com/drivers/whql-amd-software-adrenalin-edition-26.5.1-win11-a.exe',
-    [string[]]$AmdInstallArguments = @('-INSTALL'),
-    [switch]$SkipAmdDriverDownload,
-    [switch]$InstallAmdDriver,
 
     [switch]$SkipKeyboardFilter,
     [string[]]$BlockedPredefinedKeys = @(
@@ -36,6 +31,7 @@ param(
     [int]$KeyboardBreakoutKeyScanCode = 71,
 
     [string]$YargArguments = '-screen-fullscreen 1',
+    [switch]$UsePowerShellWrapper,
     [switch]$EnableUnbrandedBoot,
     [switch]$NoRestart,
     [switch]$Force
@@ -91,14 +87,11 @@ function Save-InstallConfig {
     [pscustomobject]@{
         Channel = $Channel
         InstallRoot = $InstallRoot
-        AmdDriverUrl = $AmdDriverUrl
-        AmdInstallArguments = $AmdInstallArguments
-        SkipAmdDriverDownload = [bool]$SkipAmdDriverDownload
-        InstallAmdDriver = [bool]$InstallAmdDriver
         SkipKeyboardFilter = [bool]$SkipKeyboardFilter
         BlockedPredefinedKeys = $BlockedPredefinedKeys
         KeyboardBreakoutKeyScanCode = $KeyboardBreakoutKeyScanCode
         YargArguments = $YargArguments
+        UsePowerShellWrapper = [bool]$UsePowerShellWrapper
         EnableUnbrandedBoot = [bool]$EnableUnbrandedBoot
         Force = [bool]$Force
     } | ConvertTo-Json -Depth 5 | Set-Content -Path $Path -Encoding ASCII
@@ -114,30 +107,13 @@ function Import-InstallConfig {
     $config = Get-Content -Path $Path -Raw | ConvertFrom-Json
     $script:Channel = $config.Channel
     $script:InstallRoot = $config.InstallRoot
-    $script:AmdDriverUrl = $config.AmdDriverUrl
-    $script:AmdInstallArguments = if ($config.PSObject.Properties.Name -contains 'AmdInstallArguments' -and $null -ne $config.AmdInstallArguments) { @($config.AmdInstallArguments) } else { @('-INSTALL') }
-    $script:SkipAmdDriverDownload = [bool]$config.SkipAmdDriverDownload
-    $script:InstallAmdDriver = [bool]$config.InstallAmdDriver
     $script:SkipKeyboardFilter = [bool]$config.SkipKeyboardFilter
     $script:BlockedPredefinedKeys = @($config.BlockedPredefinedKeys)
     $script:KeyboardBreakoutKeyScanCode = [int]$config.KeyboardBreakoutKeyScanCode
     $script:YargArguments = $config.YargArguments
+    $script:UsePowerShellWrapper = if ($config.PSObject.Properties.Name -contains 'UsePowerShellWrapper') { [bool]$config.UsePowerShellWrapper } else { $false }
     $script:EnableUnbrandedBoot = [bool]$config.EnableUnbrandedBoot
     $script:Force = [bool]$config.Force
-}
-
-function Register-NextStage {
-    param(
-        [Parameter(Mandatory)]
-        [ValidateSet('Drivers', 'Kiosk')]
-        [string]$NextStage,
-        [Parameter(Mandatory)][string]$ScriptPath,
-        [Parameter(Mandatory)][string]$SavedConfigPath
-    )
-
-    $command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Stage $NextStage -ConfigPath `"$SavedConfigPath`""
-    New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Force | Out-Null
-    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name "YARG Kiosk $NextStage" -Value $command
 }
 
 function Enable-RequiredFeatures {
@@ -272,22 +248,40 @@ exit `$process.ExitCode
 }
 
 function Enable-YargShellLauncherForCurrentUser {
-    param([string]$LauncherPath)
+    param([string]$ShellCommand)
 
     $class = [wmiclass]'\\localhost\root\standardcimv2\embedded:WESL_UserSetting'
     $restartShell = 0
-    $shell = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$LauncherPath`""
     $sid = Get-CurrentUserSid
 
     $class.SetDefaultShell('explorer.exe', $restartShell) | Out-Null
-    $class.SetCustomShell($sid, $shell, $null, $null, $restartShell) | Out-Null
+    $class.SetCustomShell($sid, $ShellCommand, $null, $null, $restartShell) | Out-Null
     $class.SetEnabled($true) | Out-Null
 
     [pscustomobject]@{
         User = Get-CurrentUserName
         Sid = $sid
-        Shell = $shell
+        Shell = $ShellCommand
     }
+}
+
+function Get-YargShellCommand {
+    param(
+        [Parameter(Mandatory)][string]$YargExe,
+        [string]$Arguments,
+        [switch]$UseWrapper
+    )
+
+    if ($UseWrapper) {
+        $launcher = Write-YargLauncher -YargExe $YargExe -Arguments $Arguments
+        return "powershell.exe -WindowStyle Hidden -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
+    }
+
+    if ([string]::IsNullOrWhiteSpace($Arguments)) {
+        return "`"$YargExe`""
+    }
+
+    return "`"$YargExe`" $Arguments"
 }
 
 function Set-KeyboardFilterSetting {
@@ -356,28 +350,6 @@ function Clear-LegacyAutoLogon {
     Remove-ItemProperty -Path $winlogon -Name DefaultDomainName -ErrorAction SilentlyContinue
 }
 
-function Download-AmdDriver {
-    param([string]$DriverUrl)
-
-    $fileName = Split-Path -Leaf ([Uri]$DriverUrl).AbsolutePath
-    $outFile = Join-Path $env:ProgramData "YARG-Kiosk\Downloads\$fileName"
-    if (-not (Test-Path $outFile) -or $Force) {
-        Download-File -Uri $DriverUrl -OutFile $outFile
-    }
-    $outFile
-}
-
-function Install-AmdDriverStage {
-    param(
-        [Parameter(Mandatory)][string]$DriverUrl,
-        [string[]]$InstallArguments
-    )
-
-    $driverPath = Download-AmdDriver -DriverUrl $DriverUrl
-    Invoke-LoggedProcess -FilePath $driverPath -ArgumentList $InstallArguments -IgnoreExitCode
-    $driverPath
-}
-
 Assert-Admin
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $stateDir = Get-StateDir
@@ -387,7 +359,7 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $stateDir 'install-config.json'
 }
 
-if ($Stage -eq 'Kiosk' -or $Stage -eq 'Drivers') {
+if ($Stage -eq 'Kiosk') {
     Import-InstallConfig -Path $ConfigPath
 }
 
@@ -402,13 +374,12 @@ if ($Stage -eq 'Auto' -or $Stage -eq 'Features') {
 
     Save-InstallConfig -Path $ConfigPath
     Enable-RequiredFeatures
-    $nextStage = if ($InstallAmdDriver) { 'Drivers' } else { 'Kiosk' }
-    Register-NextStage -NextStage $nextStage -ScriptPath $stagedScript -SavedConfigPath $ConfigPath
 
     Write-Host ''
     Write-Host 'Etapa 1 completada: features de Device Lockdown habilitadas.'
-    Write-Host "Siguiente etapa agendada con RunOnce: $nextStage"
-    Write-Host 'Despues del reinicio, entra con la cuenta default/administrador para continuar automaticamente.'
+    Write-Host 'Despues del reinicio, instala manualmente los drivers de video AMD/NVIDIA/Intel.'
+    Write-Host "Cuando la resolucion y aceleracion esten correctas, ejecuta:"
+    Write-Host "  powershell.exe -ExecutionPolicy Bypass -File `"$stagedScript`" -Stage Kiosk -ConfigPath `"$ConfigPath`""
 
     if ($NoRestart) {
         Write-Host 'Reinicio omitido por -NoRestart. Reinicia manualmente para continuar.'
@@ -422,33 +393,12 @@ if ($Stage -eq 'Auto' -or $Stage -eq 'Features') {
     exit 0
 }
 
-if ($Stage -eq 'Drivers') {
-    $stagedScript = Join-Path $stateDir 'Install-YargKiosk.ps1'
-    Register-NextStage -NextStage 'Kiosk' -ScriptPath $stagedScript -SavedConfigPath $ConfigPath
-
-    Write-Host ''
-    Write-Host 'Etapa de driver AMD iniciada. Shell Launcher todavia no se aplica.'
-    $driverPath = Install-AmdDriverStage -DriverUrl $AmdDriverUrl -InstallArguments $AmdInstallArguments
-    Write-Host "Driver AMD ejecutado desde: $driverPath"
-
-    if ($NoRestart) {
-        Write-Host 'Reinicio omitido por -NoRestart. Reinicia manualmente para continuar con la etapa Kiosk.'
-    }
-    else {
-        Write-Host 'Reiniciando en 20 segundos para completar el driver AMD...'
-        Start-Sleep -Seconds 20
-        Restart-Computer
-    }
-
-    exit 0
-}
-
 $yarg = Install-Yarg -SelectedChannel $Channel
-$launcher = Write-YargLauncher -YargExe $yarg.ExePath -Arguments $YargArguments
+$shellCommand = Get-YargShellCommand -YargExe $yarg.ExePath -Arguments $YargArguments -UseWrapper:$UsePowerShellWrapper
 
 Clear-LegacyAutoLogon
 Enable-CustomLogon
-$shellInfo = Enable-YargShellLauncherForCurrentUser -LauncherPath $launcher
+$shellInfo = Enable-YargShellLauncherForCurrentUser -ShellCommand $shellCommand
 
 if (-not $SkipKeyboardFilter) {
     Enable-YargKeyboardFilter -Keys $BlockedPredefinedKeys -BreakoutScanCode $KeyboardBreakoutKeyScanCode
@@ -460,11 +410,6 @@ if ($EnableUnbrandedBoot) {
     Invoke-LoggedProcess -FilePath bcdedit.exe -ArgumentList @('-set', '{globalsettings}', 'bootuxdisabled', 'on') -IgnoreExitCode
 }
 
-$driverPath = $null
-if (-not $SkipAmdDriverDownload -and -not $InstallAmdDriver) {
-    $driverPath = Download-AmdDriver -DriverUrl $AmdDriverUrl
-}
-
 $manifest = [pscustomobject]@{
     ConfiguredAt = (Get-Date).ToString('s')
     Channel = $Channel
@@ -473,10 +418,11 @@ $manifest = [pscustomobject]@{
     YargExe = $yarg.ExePath
     ShellUser = $shellInfo.User
     ShellSid = $shellInfo.Sid
+    Shell = $shellInfo.Shell
+    UsePowerShellWrapper = [bool]$UsePowerShellWrapper
     KeyboardFilter = (-not $SkipKeyboardFilter)
     KeyboardBreakoutKeyScanCode = if ($SkipKeyboardFilter) { $null } else { $KeyboardBreakoutKeyScanCode }
     BlockedPredefinedKeys = if ($SkipKeyboardFilter) { @() } else { $BlockedPredefinedKeys }
-    AmdDriver = $driverPath
 }
 
 $manifestPath = Join-Path $env:ProgramData 'YARG-Kiosk\manifest.json'
