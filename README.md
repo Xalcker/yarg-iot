@@ -29,6 +29,12 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 .\scripts\Install-YargKiosk.ps1 -Channel stable
 ```
 
+Por defecto la cuenta local `YargKiosk` usa la contrasena `YargKiosk123!`. Puedes cambiarla:
+
+```powershell
+.\scripts\Install-YargKiosk.ps1 -Channel stable -KioskPasswordText "UnaClaveLocal123!"
+```
+
 Nightly:
 
 ```powershell
@@ -47,8 +53,16 @@ El comportamiento por defecto es por etapas:
 
 - Etapa 1: habilita features de Device Lockdown y agenda la etapa 2 con `RunOnce`.
 - Reinicio 1: Windows termina de instalar las features.
-- Etapa 2: descarga YARG, crea usuario, aplica Custom Logon, Keyboard Filter, Shell Launcher y AutoLogon.
-- Reinicio 2: prueba real del kiosko.
+- Etapa AMD, solo si usas `-InstallAmdDriver`: descarga/ejecuta el instalador AMD mientras todavia estas en Explorer/admin.
+- Reinicio AMD: deja que Windows termine de aplicar el driver de video antes del kiosko.
+- Etapa Kiosk: descarga YARG, crea usuario, aplica Custom Logon, Keyboard Filter, Shell Launcher y AutoLogon.
+- Reinicio final: prueba real del kiosko.
+
+Si quieres que AMD se instale con otros argumentos, por ejemplo auto-reinicio del propio instalador:
+
+```powershell
+.\scripts\Install-YargKiosk.ps1 -Channel stable -InstallAmdDriver -AmdInstallArguments '-INSTALL','-boot'
+```
 
 Para hacer las etapas sin reiniciar automaticamente:
 
@@ -68,7 +82,7 @@ Si necesitas dejar temporalmente el teclado sin filtrar durante pruebas:
   - `stable`: `YARC-Official/YARG`
   - `nightly`: `YARC-Official/YARG-BleedingEdge`
 - Extrae YARG bajo `C:\YARG\<canal>-<tag>`.
-- Crea o actualiza la cuenta local `YargKiosk` sin privilegios de administrador.
+- Crea o actualiza la cuenta local `YargKiosk` sin privilegios de administrador. Por defecto usa `YargKiosk123!`, o el valor de `-KioskPasswordText`.
 - Habilita Shell Launcher y asigna a `YargKiosk` un shell personalizado que arranca YARG.
 - Deja `explorer.exe` para el grupo local Administrators.
 - Configura inicio de sesion automatico para `YargKiosk`, salvo que pases `-NoAutoLogon`.
@@ -133,3 +147,18 @@ C:\ProgramData\YARG-Kiosk\Revert-YargKiosk.ps1
 ```
 
 Si no puedes abrir sesion, arranca en WinRE/WinPE y usa System Restore o carga la instalacion para eliminar AutoLogon. La version nueva retrasa Shell Launcher hasta despues del primer reinicio para evitar ese estado.
+
+## Reparar AutoLogon
+
+Si despues de la segunda etapa Windows muestra `The user name or password is incorrect`, entra al escritorio admin/auditoria, abre PowerShell como administrador y fuerza una clave conocida:
+
+```powershell
+net user YargKiosk "YargKiosk123!" /active:yes /passwordchg:no /expires:never
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 1 /f
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultUserName /t REG_SZ /d ".\YargKiosk" /f
+reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultDomainName /f
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /t REG_SZ /d "YargKiosk123!" /f
+shutdown /r /t 0
+```
+
+Que aparezca `System Preparation Tool` al entrar al escritorio admin es normal mientras sigas en modo auditoria.

@@ -1,7 +1,7 @@
 #requires -version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('Auto', 'Features', 'Kiosk')]
+    [ValidateSet('Auto', 'Features', 'Drivers', 'Kiosk')]
     [string]$Stage = 'Auto',
 
     [string]$ConfigPath,
@@ -13,8 +13,10 @@ param(
     [string]$KioskUser = 'YargKiosk',
     [string]$KioskFullName = 'YARG Kiosk',
     [securestring]$KioskPassword,
+    [string]$KioskPasswordText,
 
     [string]$AmdDriverUrl = 'https://drivers.amd.com/drivers/whql-amd-software-adrenalin-edition-26.5.1-win11-a.exe',
+    [string[]]$AmdInstallArguments = @('-INSTALL'),
     [switch]$SkipAmdDriverDownload,
     [switch]$InstallAmdDriver,
 
@@ -67,12 +69,6 @@ function ConvertTo-PlainText {
     }
 }
 
-function New-RandomPassword {
-    $bytes = New-Object byte[] 18
-    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    [Convert]::ToBase64String($bytes) -replace '[+/=]', 'x'
-}
-
 function Invoke-LoggedProcess {
     param(
         [Parameter(Mandatory)]
@@ -120,6 +116,7 @@ function Save-InstallConfig {
         KioskFullName = $KioskFullName
         PlainPassword = $PlainPassword
         AmdDriverUrl = $AmdDriverUrl
+        AmdInstallArguments = $AmdInstallArguments
         SkipAmdDriverDownload = [bool]$SkipAmdDriverDownload
         InstallAmdDriver = [bool]$InstallAmdDriver
         SkipKeyboardFilter = [bool]$SkipKeyboardFilter
@@ -148,6 +145,12 @@ function Import-InstallConfig {
     $script:KioskFullName = $config.KioskFullName
     $script:KioskPassword = ConvertTo-SecureString ([string]$config.PlainPassword) -AsPlainText -Force
     $script:AmdDriverUrl = $config.AmdDriverUrl
+    if ($config.PSObject.Properties.Name -contains 'AmdInstallArguments' -and $null -ne $config.AmdInstallArguments) {
+        $script:AmdInstallArguments = @($config.AmdInstallArguments)
+    }
+    else {
+        $script:AmdInstallArguments = @('-INSTALL')
+    }
     $script:SkipAmdDriverDownload = [bool]$config.SkipAmdDriverDownload
     $script:InstallAmdDriver = [bool]$config.InstallAmdDriver
     $script:SkipKeyboardFilter = [bool]$config.SkipKeyboardFilter
@@ -161,15 +164,18 @@ function Import-InstallConfig {
     [string]$config.PlainPassword
 }
 
-function Register-StageTwo {
+function Register-NextStage {
     param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Drivers', 'Kiosk')]
+        [string]$NextStage,
         [Parameter(Mandatory)][string]$ScriptPath,
         [Parameter(Mandatory)][string]$SavedConfigPath
     )
 
-    $command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Stage Kiosk -ConfigPath `"$SavedConfigPath`""
+    $command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Stage $NextStage -ConfigPath `"$SavedConfigPath`""
     New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Force | Out-Null
-    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'YARG Kiosk Stage 2' -Value $command
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name "YARG Kiosk $NextStage" -Value $command
 }
 
 function Enable-RequiredFeatures {
@@ -267,6 +273,7 @@ function Ensure-KioskUser {
     param(
         [string]$UserName,
         [securestring]$Password,
+        [string]$PlainPassword,
         [string]$FullName
     )
 
@@ -278,6 +285,8 @@ function Ensure-KioskUser {
         Set-LocalUser -Name $UserName -Password $Password -PasswordNeverExpires $true
         Enable-LocalUser -Name $UserName
     }
+
+    Invoke-LoggedProcess -FilePath net.exe -ArgumentList @('user', $UserName, $PlainPassword, '/active:yes', '/passwordchg:no', '/expires:never')
 
     $accountName = "$env:COMPUTERNAME\$UserName"
     $usersGroup = Get-LocalGroup -SID 'S-1-5-32-545'
@@ -408,8 +417,8 @@ function Enable-AutoLogon {
     $path = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
     New-Item -Path $path -Force | Out-Null
     Set-ItemProperty -Path $path -Name AutoAdminLogon -Value '1'
-    Set-ItemProperty -Path $path -Name DefaultUserName -Value $UserName
-    Set-ItemProperty -Path $path -Name DefaultDomainName -Value $env:COMPUTERNAME
+    Set-ItemProperty -Path $path -Name DefaultUserName -Value ".\$UserName"
+    Remove-ItemProperty -Path $path -Name DefaultDomainName -ErrorAction SilentlyContinue
     Set-ItemProperty -Path $path -Name DefaultPassword -Value $Password
 }
 
@@ -424,6 +433,17 @@ function Download-AmdDriver {
     $outFile
 }
 
+function Install-AmdDriverStage {
+    param(
+        [Parameter(Mandatory)][string]$DriverUrl,
+        [string[]]$InstallArguments
+    )
+
+    $driverPath = Download-AmdDriver -DriverUrl $DriverUrl
+    Invoke-LoggedProcess -FilePath $driverPath -ArgumentList $InstallArguments -IgnoreExitCode
+    $driverPath
+}
+
 Assert-Admin
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $stateDir = Get-StateDir
@@ -433,16 +453,20 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $stateDir 'install-config.json'
 }
 
-if ($Stage -eq 'Kiosk') {
+if ($Stage -eq 'Kiosk' -or $Stage -eq 'Drivers') {
     $plainPassword = Import-InstallConfig -Path $ConfigPath
 }
 else {
-    if ($null -eq $KioskPassword) {
-        $plainPassword = New-RandomPassword
+    if (-not [string]::IsNullOrWhiteSpace($KioskPasswordText)) {
+        $plainPassword = $KioskPasswordText
         $KioskPassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
     }
-    else {
+    elseif ($null -ne $KioskPassword) {
         $plainPassword = ConvertTo-PlainText -SecureString $KioskPassword
+    }
+    else {
+        $plainPassword = 'YargKiosk123!'
+        $KioskPassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
     }
 }
 
@@ -457,12 +481,13 @@ if ($Stage -eq 'Auto' -or $Stage -eq 'Features') {
 
     Save-InstallConfig -Path $ConfigPath -PlainPassword $plainPassword
     Enable-RequiredFeatures
-    Register-StageTwo -ScriptPath $stagedScript -SavedConfigPath $ConfigPath
+    $nextStage = if ($InstallAmdDriver) { 'Drivers' } else { 'Kiosk' }
+    Register-NextStage -NextStage $nextStage -ScriptPath $stagedScript -SavedConfigPath $ConfigPath
 
     Write-Host ''
     Write-Host 'Etapa 1 completada: features de Device Lockdown habilitadas.'
-    Write-Host "Etapa 2 agendada con RunOnce: $stagedScript"
-    Write-Host 'Despues del reinicio, entra con la cuenta administradora/auditoria para completar la configuracion del kiosko.'
+    Write-Host "Siguiente etapa agendada con RunOnce: $nextStage"
+    Write-Host 'Despues del reinicio, entra con la cuenta administradora/auditoria para continuar automaticamente.'
 
     if ($NoRestart) {
         Write-Host 'Reinicio omitido por -NoRestart. Reinicia manualmente para continuar.'
@@ -476,8 +501,30 @@ if ($Stage -eq 'Auto' -or $Stage -eq 'Features') {
     exit 0
 }
 
+if ($Stage -eq 'Drivers') {
+    $sourceScript = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+    $stagedScript = Join-Path $stateDir 'Install-YargKiosk.ps1'
+    Register-NextStage -NextStage 'Kiosk' -ScriptPath $stagedScript -SavedConfigPath $ConfigPath
+
+    Write-Host ''
+    Write-Host 'Etapa de driver AMD iniciada. Shell Launcher y AutoLogon todavia no se aplican.'
+    $driverPath = Install-AmdDriverStage -DriverUrl $AmdDriverUrl -InstallArguments $AmdInstallArguments
+    Write-Host "Driver AMD ejecutado desde: $driverPath"
+
+    if ($NoRestart) {
+        Write-Host 'Reinicio omitido por -NoRestart. Reinicia manualmente para continuar con la etapa Kiosk.'
+    }
+    else {
+        Write-Host 'Reiniciando en 20 segundos para completar el driver AMD...'
+        Start-Sleep -Seconds 20
+        Restart-Computer
+    }
+
+    exit 0
+}
+
 $yarg = Install-Yarg -SelectedChannel $Channel
-$kioskSid = Ensure-KioskUser -UserName $KioskUser -Password $KioskPassword -FullName $KioskFullName
+$kioskSid = Ensure-KioskUser -UserName $KioskUser -Password $KioskPassword -PlainPassword $plainPassword -FullName $KioskFullName
 $launcher = Write-YargLauncher -YargExe $yarg.ExePath -Arguments $YargArguments
 
 Enable-CustomLogon
@@ -498,11 +545,8 @@ if ($EnableUnbrandedBoot) {
 }
 
 $driverPath = $null
-if (-not $SkipAmdDriverDownload) {
+if (-not $SkipAmdDriverDownload -and -not $InstallAmdDriver) {
     $driverPath = Download-AmdDriver -DriverUrl $AmdDriverUrl
-    if ($InstallAmdDriver) {
-        Invoke-LoggedProcess -FilePath $driverPath -ArgumentList @('-INSTALL') -IgnoreExitCode
-    }
 }
 
 $manifest = [pscustomobject]@{
@@ -530,6 +574,7 @@ Write-Host "Usuario kiosk: $KioskUser ($kioskSid)"
 Write-Host "Manifest: $manifestPath"
 if (-not $NoAutoLogon) {
     Write-Warning 'AutoLogon usa DefaultPassword en Winlogon. La cuenta no es admin, pero la clave queda disponible para administradores locales.'
+    Write-Host "AutoLogon configurado como .\$KioskUser"
 }
 if (-not $SkipKeyboardFilter) {
     Write-Host "Keyboard Filter activo para usuarios no admin. Pulsa Home 5 veces para salir a la pantalla de bienvenida."
