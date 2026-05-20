@@ -478,6 +478,10 @@ if ($Stage -eq 'Auto' -or $Stage -eq 'Features') {
     if (Test-Path $revertSource) {
         Copy-Item -LiteralPath $revertSource -Destination (Join-Path $stateDir 'Revert-YargKiosk.ps1') -Force
     }
+    $repairSource = Join-Path (Split-Path -Parent $sourceScript) 'Repair-YargAutoLogon.ps1'
+    if (Test-Path $repairSource) {
+        Copy-Item -LiteralPath $repairSource -Destination (Join-Path $stateDir 'Repair-YargAutoLogon.ps1') -Force
+    }
 
     Save-InstallConfig -Path $ConfigPath -PlainPassword $plainPassword
     Enable-RequiredFeatures

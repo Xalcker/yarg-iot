@@ -162,3 +162,17 @@ shutdown /r /t 0
 ```
 
 Que aparezca `System Preparation Tool` al entrar al escritorio admin es normal mientras sigas en modo auditoria.
+
+Tambien puedes usar el script de reparacion:
+
+```powershell
+.\scripts\Repair-YargAutoLogon.ps1 -Restart
+```
+
+Si Windows insiste en volver al admin de auditoria aunque el usuario/clave esten bien:
+
+```powershell
+.\scripts\Repair-YargAutoLogon.ps1 -DisableAuditModeMarkers -Restart
+```
+
+Esto no reemplaza el cierre formal con Sysprep; solo sirve para probar el kiosko antes de capturar.
