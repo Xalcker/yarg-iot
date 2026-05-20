@@ -1,6 +1,11 @@
 #requires -version 5.1
 [CmdletBinding()]
 param(
+    [ValidateSet('Auto', 'Features', 'Kiosk')]
+    [string]$Stage = 'Auto',
+
+    [string]$ConfigPath,
+
     [ValidateSet('stable', 'nightly')]
     [string]$Channel = 'stable',
 
@@ -35,6 +40,7 @@ param(
     [string]$YargArguments = '-screen-fullscreen 1',
     [switch]$NoAutoLogon,
     [switch]$EnableUnbrandedBoot,
+    [switch]$NoRestart,
     [switch]$Force
 )
 
@@ -93,6 +99,88 @@ function Enable-OptionalFeatureIfNeeded {
 
     if ($feature.State -ne 'Enabled') {
         Invoke-LoggedProcess -FilePath dism.exe -ArgumentList @('/online', '/enable-feature', "/featurename:$FeatureName", '/NoRestart') -IgnoreExitCode
+    }
+}
+
+function Get-StateDir {
+    Join-Path $env:ProgramData 'YARG-Kiosk'
+}
+
+function Save-InstallConfig {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$PlainPassword
+    )
+
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    $config = [pscustomobject]@{
+        Channel = $Channel
+        InstallRoot = $InstallRoot
+        KioskUser = $KioskUser
+        KioskFullName = $KioskFullName
+        PlainPassword = $PlainPassword
+        AmdDriverUrl = $AmdDriverUrl
+        SkipAmdDriverDownload = [bool]$SkipAmdDriverDownload
+        InstallAmdDriver = [bool]$InstallAmdDriver
+        SkipKeyboardFilter = [bool]$SkipKeyboardFilter
+        BlockedPredefinedKeys = $BlockedPredefinedKeys
+        KeyboardBreakoutKeyScanCode = $KeyboardBreakoutKeyScanCode
+        YargArguments = $YargArguments
+        NoAutoLogon = [bool]$NoAutoLogon
+        EnableUnbrandedBoot = [bool]$EnableUnbrandedBoot
+        Force = [bool]$Force
+    }
+
+    $config | ConvertTo-Json -Depth 5 | Set-Content -Path $Path -Encoding ASCII
+}
+
+function Import-InstallConfig {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        throw "No existe el archivo de configuracion por etapas: $Path"
+    }
+
+    $config = Get-Content -Path $Path -Raw | ConvertFrom-Json
+    $script:Channel = $config.Channel
+    $script:InstallRoot = $config.InstallRoot
+    $script:KioskUser = $config.KioskUser
+    $script:KioskFullName = $config.KioskFullName
+    $script:KioskPassword = ConvertTo-SecureString ([string]$config.PlainPassword) -AsPlainText -Force
+    $script:AmdDriverUrl = $config.AmdDriverUrl
+    $script:SkipAmdDriverDownload = [bool]$config.SkipAmdDriverDownload
+    $script:InstallAmdDriver = [bool]$config.InstallAmdDriver
+    $script:SkipKeyboardFilter = [bool]$config.SkipKeyboardFilter
+    $script:BlockedPredefinedKeys = @($config.BlockedPredefinedKeys)
+    $script:KeyboardBreakoutKeyScanCode = [int]$config.KeyboardBreakoutKeyScanCode
+    $script:YargArguments = $config.YargArguments
+    $script:NoAutoLogon = [bool]$config.NoAutoLogon
+    $script:EnableUnbrandedBoot = [bool]$config.EnableUnbrandedBoot
+    $script:Force = [bool]$config.Force
+
+    [string]$config.PlainPassword
+}
+
+function Register-StageTwo {
+    param(
+        [Parameter(Mandatory)][string]$ScriptPath,
+        [Parameter(Mandatory)][string]$SavedConfigPath
+    )
+
+    $command = "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Stage Kiosk -ConfigPath `"$SavedConfigPath`""
+    New-Item -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Force | Out-Null
+    Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'YARG Kiosk Stage 2' -Value $command
+}
+
+function Enable-RequiredFeatures {
+    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-DeviceLockdown'
+    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-EmbeddedShellLauncher'
+    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-EmbeddedLogon'
+    if (-not $SkipKeyboardFilter) {
+        Enable-OptionalFeatureIfNeeded -FeatureName 'Client-KeyboardFilter'
+    }
+    if ($EnableUnbrandedBoot) {
+        Enable-OptionalFeatureIfNeeded -FeatureName 'Client-EmbeddedBootExp'
     }
 }
 
@@ -243,10 +331,6 @@ function Enable-YargShellLauncher {
         [string]$KioskSid,
         [string]$LauncherPath
     )
-
-    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-DeviceLockdown'
-    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-EmbeddedShellLauncher'
-
     $class = [wmiclass]'\\localhost\root\standardcimv2\embedded:WESL_UserSetting'
     $restartShell = 0
     $adminsSid = 'S-1-5-32-544'
@@ -281,10 +365,6 @@ function Enable-YargKeyboardFilter {
         [string[]]$Keys,
         [int]$BreakoutScanCode
     )
-
-    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-DeviceLockdown'
-    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-KeyboardFilter'
-
     Set-KeyboardFilterSetting -Name 'DisableKeyboardFilterForAdministrators' -Value 'true'
     Set-KeyboardFilterSetting -Name 'ForceOffAccessibility' -Value 'true'
     Set-KeyboardFilterSetting -Name 'BreakoutKeyScanCode' -Value ([string]$BreakoutScanCode)
@@ -311,9 +391,6 @@ function Enable-YargKeyboardFilter {
 }
 
 function Enable-CustomLogon {
-    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-DeviceLockdown'
-    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-EmbeddedLogon'
-
     reg.exe add 'HKLM\SOFTWARE\Microsoft\Windows Embedded\EmbeddedLogon' /v BrandingNeutral /t REG_DWORD /d 1 /f | Out-Null
     reg.exe add 'HKLM\SOFTWARE\Microsoft\Windows Embedded\EmbeddedLogon' /v HideAutoLogonUI /t REG_DWORD /d 1 /f | Out-Null
     reg.exe add 'HKLM\SOFTWARE\Microsoft\Windows Embedded\EmbeddedLogon' /v HideFirstLogonAnimation /t REG_DWORD /d 1 /f | Out-Null
@@ -349,13 +426,54 @@ function Download-AmdDriver {
 
 Assert-Admin
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$stateDir = Get-StateDir
+New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 
-if ($null -eq $KioskPassword) {
-    $plainPassword = New-RandomPassword
-    $KioskPassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
+    $ConfigPath = Join-Path $stateDir 'install-config.json'
+}
+
+if ($Stage -eq 'Kiosk') {
+    $plainPassword = Import-InstallConfig -Path $ConfigPath
 }
 else {
-    $plainPassword = ConvertTo-PlainText -SecureString $KioskPassword
+    if ($null -eq $KioskPassword) {
+        $plainPassword = New-RandomPassword
+        $KioskPassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force
+    }
+    else {
+        $plainPassword = ConvertTo-PlainText -SecureString $KioskPassword
+    }
+}
+
+if ($Stage -eq 'Auto' -or $Stage -eq 'Features') {
+    $sourceScript = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+    $stagedScript = Join-Path $stateDir 'Install-YargKiosk.ps1'
+    Copy-Item -LiteralPath $sourceScript -Destination $stagedScript -Force
+    $revertSource = Join-Path (Split-Path -Parent $sourceScript) 'Revert-YargKiosk.ps1'
+    if (Test-Path $revertSource) {
+        Copy-Item -LiteralPath $revertSource -Destination (Join-Path $stateDir 'Revert-YargKiosk.ps1') -Force
+    }
+
+    Save-InstallConfig -Path $ConfigPath -PlainPassword $plainPassword
+    Enable-RequiredFeatures
+    Register-StageTwo -ScriptPath $stagedScript -SavedConfigPath $ConfigPath
+
+    Write-Host ''
+    Write-Host 'Etapa 1 completada: features de Device Lockdown habilitadas.'
+    Write-Host "Etapa 2 agendada con RunOnce: $stagedScript"
+    Write-Host 'Despues del reinicio, entra con la cuenta administradora/auditoria para completar la configuracion del kiosko.'
+
+    if ($NoRestart) {
+        Write-Host 'Reinicio omitido por -NoRestart. Reinicia manualmente para continuar.'
+    }
+    else {
+        Write-Host 'Reiniciando en 10 segundos...'
+        Start-Sleep -Seconds 10
+        Restart-Computer
+    }
+
+    exit 0
 }
 
 $yarg = Install-Yarg -SelectedChannel $Channel
@@ -374,7 +492,6 @@ if (-not $NoAutoLogon) {
 }
 
 if ($EnableUnbrandedBoot) {
-    Enable-OptionalFeatureIfNeeded -FeatureName 'Client-EmbeddedBootExp'
     Invoke-LoggedProcess -FilePath bcdedit.exe -ArgumentList @('-set', '{globalsettings}', 'advancedoptions', 'false') -IgnoreExitCode
     Invoke-LoggedProcess -FilePath bcdedit.exe -ArgumentList @('-set', '{globalsettings}', 'optionsedit', 'false') -IgnoreExitCode
     Invoke-LoggedProcess -FilePath bcdedit.exe -ArgumentList @('-set', '{globalsettings}', 'bootuxdisabled', 'on') -IgnoreExitCode
@@ -417,4 +534,11 @@ if (-not $NoAutoLogon) {
 if (-not $SkipKeyboardFilter) {
     Write-Host "Keyboard Filter activo para usuarios no admin. Pulsa Home 5 veces para salir a la pantalla de bienvenida."
 }
-Write-Host 'Reinicia para probar. Si todo esta bien, ejecuta Sysprep y captura la imagen desde WinPE.'
+if ($NoRestart) {
+    Write-Host 'Reinicio final omitido por -NoRestart. Reinicia manualmente para probar el kiosko.'
+}
+else {
+    Write-Host 'Reiniciando en 10 segundos para probar el kiosko...'
+    Start-Sleep -Seconds 10
+    Restart-Computer
+}

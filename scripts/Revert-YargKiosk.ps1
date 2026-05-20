@@ -11,9 +11,14 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw 'Ejecuta este script desde PowerShell como administrador.'
 }
 
-$class = [wmiclass]'\\localhost\root\standardcimv2\embedded:WESL_UserSetting'
-$class.SetDefaultShell('explorer.exe', 0) | Out-Null
-$class.SetEnabled($false) | Out-Null
+try {
+    $class = [wmiclass]'\\localhost\root\standardcimv2\embedded:WESL_UserSetting'
+    $class.SetDefaultShell('explorer.exe', 0) | Out-Null
+    $class.SetEnabled($false) | Out-Null
+}
+catch {
+    Write-Warning "No pude desactivar Shell Launcher por WMI: $($_.Exception.Message)"
+}
 
 $blockedPredefinedKeys = @(
     'Ctrl+Alt+Del',
@@ -56,8 +61,12 @@ catch {
 
 $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 Set-ItemProperty -Path $winlogon -Name AutoAdminLogon -Value '0'
+Set-ItemProperty -Path $winlogon -Name Shell -Value 'explorer.exe'
 Remove-ItemProperty -Path $winlogon -Name DefaultPassword -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path $winlogon -Name DefaultUserName -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path $winlogon -Name DefaultDomainName -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce' -Name 'YARG Kiosk Stage 2' -ErrorAction SilentlyContinue
 
-Write-Host 'Shell Launcher desactivado, Keyboard Filter desbloqueado y AutoLogon eliminado. Reinicia para volver a Explorer.'
+Start-Process explorer.exe -ErrorAction SilentlyContinue
+
+Write-Host 'Shell Launcher desactivado, Keyboard Filter desbloqueado, RunOnce limpiado y AutoLogon eliminado. Reinicia para volver a Explorer.'

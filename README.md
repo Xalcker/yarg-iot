@@ -16,8 +16,9 @@ Este paquete deja una imagen de referencia de Windows IoT Enterprise lista para 
 2. Crea el USB de instalacion de Windows 11 IoT Enterprise LTSC 2024 y arranca el equipo objetivo.
 3. Cuando Windows Setup llegue a OOBE, en la pantalla de region, entra en modo auditoria con `Ctrl+Shift+F3`. No termines OOBE todavia.
 4. En modo auditoria, abre PowerShell como administrador y ejecuta el instalador de este repo.
-5. Prueba el reinicio del dispositivo. Debe iniciar sesion automaticamente como `YargKiosk` y abrir YARG.
-6. Cuando este validado, ejecuta Sysprep y captura la imagen desde WinPE.
+5. El script hace una primera etapa, reinicia, y se reanuda solo con `RunOnce` para aplicar Shell Launcher/Keyboard Filter cuando las clases WMI ya existen.
+6. Tras el segundo reinicio debe iniciar sesion automaticamente como `YargKiosk` y abrir YARG.
+7. Cuando este validado, ejecuta Sysprep y captura la imagen desde WinPE.
 
 ## Instalacion rapida
 
@@ -41,6 +42,19 @@ Con instalacion silenciosa del paquete AMD descargado:
 ```
 
 El script descarga el instalador AMD RX 6400 al cache local siempre que no uses `-SkipAmdDriverDownload`. La instalacion silenciosa usa `-INSTALL`, que AMD documenta para Radeon Software; si falla en una version concreta, ejecuta el `.exe` descargado manualmente o extrae el paquete y lanza su `Setup.exe -INSTALL`.
+
+El comportamiento por defecto es por etapas:
+
+- Etapa 1: habilita features de Device Lockdown y agenda la etapa 2 con `RunOnce`.
+- Reinicio 1: Windows termina de instalar las features.
+- Etapa 2: descarga YARG, crea usuario, aplica Custom Logon, Keyboard Filter, Shell Launcher y AutoLogon.
+- Reinicio 2: prueba real del kiosko.
+
+Para hacer las etapas sin reiniciar automaticamente:
+
+```powershell
+.\scripts\Install-YargKiosk.ps1 -Channel stable -NoRestart
+```
 
 Si necesitas dejar temporalmente el teclado sin filtrar durante pruebas:
 
@@ -97,3 +111,25 @@ Para desactivar el kiosko y volver a Explorer:
 ```
 
 Esto desactiva Shell Launcher, restaura el shell por defecto a `explorer.exe` y elimina el autologon configurado por este paquete.
+
+## Recuperacion de pantalla negra
+
+Si el equipo queda en negro antes de aplicar esta version por etapas:
+
+1. Intenta mantener `Shift` presionado durante el arranque para saltarte AutoLogon y entrar con una cuenta administradora.
+2. Si Keyboard Filter quedo activo, pulsa `Home` cinco veces para volver a la pantalla de bienvenida.
+3. Si puedes abrir Task Manager, usa `File > Run new task`, marca privilegios de administrador y ejecuta `powershell`.
+4. Desde PowerShell elevado:
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
+.\scripts\Revert-YargKiosk.ps1
+```
+
+La etapa 1 tambien copia una salida de emergencia a:
+
+```powershell
+C:\ProgramData\YARG-Kiosk\Revert-YargKiosk.ps1
+```
+
+Si no puedes abrir sesion, arranca en WinRE/WinPE y usa System Restore o carga la instalacion para eliminar AutoLogon. La version nueva retrasa Shell Launcher hasta despues del primer reinicio para evitar ese estado.
