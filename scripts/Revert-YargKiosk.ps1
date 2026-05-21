@@ -14,6 +14,23 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 try {
     $class = [wmiclass]'\\localhost\root\standardcimv2\embedded:WESL_UserSetting'
     $class.SetDefaultShell('explorer.exe', 0) | Out-Null
+
+    # Intenta leer el SID del manifiesto de instalación para limpiar la shell personalizada
+    $manifestPath = Join-Path $env:ProgramData 'YARG-Kiosk\manifest.json'
+    if (Test-Path $manifestPath) {
+        try {
+            $manifest = Get-Content -Path $manifestPath -Raw | ConvertFrom-Json
+            $sid = $manifest.ShellSid
+            if ($sid) {
+                Write-Host "Eliminando shell personalizada en WMI para el SID: $sid"
+                $class.RemoveCustomShell($sid) | Out-Null
+            }
+        }
+        catch {
+            Write-Warning "No pude limpiar la shell personalizada especifica para el SID: $($_.Exception.Message)"
+        }
+    }
+
     $class.SetEnabled($false) | Out-Null
 }
 catch {

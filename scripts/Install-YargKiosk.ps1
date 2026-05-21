@@ -180,6 +180,7 @@ function Download-File {
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $OutFile) | Out-Null
     Write-Host "Descargando: $Uri"
+    $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing
 }
 
@@ -239,8 +240,13 @@ Add-Content -Path `$log -Value "Starting YARG: $escapedExe $escapedArgs"
 `$argLine = '$escapedArgs'
 `$splitArgs = if ([string]::IsNullOrWhiteSpace(`$argLine)) { @() } else { `$argLine -split ' ' }
 `$process = Start-Process -FilePath '$escapedExe' -ArgumentList `$splitArgs -PassThru -Wait
-Add-Content -Path `$log -Value "YARG exited with code `$(`$process.ExitCode)"
-exit `$process.ExitCode
+if (`$null -ne `$process) {
+    Add-Content -Path `$log -Value "YARG exited with code `$(`$process.ExitCode)"
+    exit `$process.ExitCode
+} else {
+    Add-Content -Path `$log -Value "Failed to start YARG process."
+    exit 1
+}
 "@
 
     Set-Content -Path $launcherPath -Value $content -Encoding ASCII
